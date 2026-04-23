@@ -210,3 +210,89 @@ def format_news(n: dict, category: dict) -> str:
     summary = n.get("summary_ua") or n.get("summary_en","")
     return (
         f"{category['emoji']} {geo_flag} {heat} <b>{n['title']}</b>\n\n"
+        f"{summary}\n\n"
+        f"📅 {n.get('date','?')} | 📰 {n.get('source','')}\n"
+        f"🔗 {n.get('url','')}"
+    )
+
+def main():
+    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    print(f"\n{'='*50}\nPsynex News Bot v4 | {now}\n{'='*50}")
+
+    seen = load_seen()
+    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+
+    send_telegram(
+        f"📰 <b>AI Дайджест для Psynex — {DATE_STR}</b>\n\n"
+        f"🇺🇦 Українські стартапи\n"
+        f"🚀 Схожі на Psynex\n"
+        f"💰 Інвестиції\n"
+        f"🤖 Anthropic / Claude\n"
+        f"📈 AI тренди"
+    )
+
+    total_sent = 0
+
+    for category in CATEGORIES:
+        print(f"\n📂 {category['label']}...")
+        all_raw = []
+        seen_urls = set()
+
+        for query in category["queries"]:
+            print(f"  🔍 {query[:55]}...")
+            results = single_search(query, client)
+            for r in results:
+                url = r.get("url", "")
+                title = r.get("title", "")
+                if url and url not in seen_urls and title:
+                    seen_urls.add(url)
+                    all_raw.append(r)
+            time.sleep(1)
+
+        print(f"  Знайдено: {len(all_raw)}")
+
+        if not all_raw:
+            send_telegram(
+                f"{category['emoji']} <b>{category['label']}</b>\n\n"
+                f"📭 Свіжих новин не знайдено."
+            )
+            continue
+
+        new_raw = [
+            r for r in all_raw
+            if news_id(r.get("title", "")) not in seen
+        ]
+
+        if not new_raw:
+            send_telegram(
+                f"{category['emoji']} <b>{category['label']}</b>\n\n"
+                f"📭 Всі знайдені новини вже надсилались."
+            )
+            continue
+
+        new_raw.sort(key=lambda x: x.get("importance", 0), reverse=True)
+        translated = translate_and_summarize(new_raw[:3], client)
+
+        sent_in_category = 0
+        for n in translated:
+            nid = news_id(n.get("title", ""))
+            try:
+                send_telegram(format_news(n, category))
+                seen.add(nid)
+                sent_in_category += 1
+                total_sent += 1
+            except Exception as e:
+                print(f"  ❌ {e}")
+
+        print(f"  Надіслано: {sent_in_category}")
+
+    send_telegram(
+        f"✅ <b>Дайджест завершено — {now}</b>\n"
+        f"Всього новин надіслано: {total_sent}"
+    )
+
+    save_seen(seen)
+    print(f"\n✅ Готово. Надіслано: {total_sent}")
+
+if __name__ == "__main__":
+    main()
