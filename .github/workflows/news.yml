@@ -1,0 +1,35 @@
+name: Psynex News Bot
+
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install anthropic requests
+
+      - name: Run news bot
+        env:
+          TELEGRAM_NEWS_TOKEN: ${{ secrets.TELEGRAM_NEWS_TOKEN }}
+          TELEGRAM_CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY:   ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python news_bot.py
+
+      - name: Save seen news
+        run: |
+          git config user.name "news-bot"
+          git config user.email "bot@psynex.app"
+          git add seen_news.json
+          git diff --staged --quiet || git commit -m "update seen news $(date '+%Y-%m-%d')" && git push
