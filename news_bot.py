@@ -1,7 +1,7 @@
 """
-Psynex News Bot
-Щодня о 08:00 шукає AI новини через Claude web search
-та надсилає в Telegram українською мовою.
+Psynex News Bot v3
+Кожен пошук = окремий Claude API виклик.
+Без site: операторів. Прості природні запити.
 """
 
 import os
@@ -10,16 +10,16 @@ import hashlib
 import requests
 import anthropic
 from datetime import datetime, timedelta
+import time
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_NEWS_TOKEN"]
 TELEGRAM_CHAT  = os.environ["TELEGRAM_CHAT_ID"]
 ANTHROPIC_KEY  = os.environ["ANTHROPIC_API_KEY"]
 SEEN_FILE      = "seen_news.json"
 
-TODAY      = datetime.now()
-YESTERDAY  = (TODAY - timedelta(days=1)).strftime("%Y-%m-%d")
-DAY_BEFORE = (TODAY - timedelta(days=2)).strftime("%Y-%m-%d")
-DATE_STR   = TODAY.strftime("%d.%m.%Y")
+TODAY    = datetime.now()
+DATE_STR = TODAY.strftime("%d.%m.%Y")
+WEEK_AGO = (TODAY - timedelta(days=7)).strftime("%d.%m.%Y")
 
 CATEGORIES = [
     {
@@ -27,10 +27,10 @@ CATEGORIES = [
         "emoji": "🇺🇦",
         "label": "Українські стартапи",
         "queries": [
-            f"Ukrainian startup funding round raised investment {YESTERDAY}",
-            f"український стартап раунд інвестиція грант {YESTERDAY}",
-            f"Ukraine startup grant received funding site:ain.ua OR site:dou.ua OR site:tech.liga.net",
-            f"Ukraine tech startup investment TechCrunch Forbes {YESTERDAY}",
+            "Ukrainian startup raised investment round April 2026",
+            "Ukraine tech company funding million 2026",
+            "Ukrainian startup grant received 2026",
+            "Kyiv Independent startup news April 2026",
         ]
     },
     {
@@ -38,10 +38,10 @@ CATEGORIES = [
         "emoji": "🚀",
         "label": "Стартапи схожі на Psynex",
         "queries": [
-            f"dating app AI personality self-discovery funding news {YESTERDAY}",
-            f"relationship app AI launch funding 2026 {YESTERDAY}",
-            f"So Syncd PersonalityMatch Hinge Bumble AI news {YESTERDAY}",
-            f"mental wellness self-discovery app startup news {YESTERDAY}",
+            "dating app AI feature launch funding April 2026",
+            "Hinge Bumble new AI feature update 2026",
+            "personality matching relationship app news April 2026",
+            "self-discovery psychology app startup funding 2026",
         ]
     },
     {
@@ -49,10 +49,10 @@ CATEGORIES = [
         "emoji": "💰",
         "label": "Залучення інвестицій",
         "queries": [
-            f"startup venture capital funding round news {YESTERDAY}",
-            f"AI startup series A B seed round raised million {YESTERDAY}",
-            f"European startup investment round {YESTERDAY} site:techcrunch.com OR site:eu-startups.com",
-            f"Ukraine Eastern Europe startup investment news {YESTERDAY}",
+            "AI startup biggest funding round April 2026",
+            "European AI startup investment series 2026",
+            "AI company raised hundred million 2026",
+            "venture capital AI fund launch 2026",
         ]
     },
     {
@@ -60,9 +60,9 @@ CATEGORIES = [
         "emoji": "🤖",
         "label": "Anthropic / Claude",
         "queries": [
-            f"Anthropic Claude update news {YESTERDAY}",
-            f"Anthropic new model feature announcement {YESTERDAY}",
-            f"Claude AI update release {YESTERDAY} site:anthropic.com OR site:techcrunch.com",
+            "Anthropic news announcement April 2026",
+            "Claude AI new model update April 2026",
+            "Anthropic Claude new feature release 2026",
         ]
     },
     {
@@ -70,10 +70,10 @@ CATEGORIES = [
         "emoji": "📈",
         "label": "AI тренди",
         "queries": [
-            f"artificial intelligence trend breakthrough {YESTERDAY}",
-            f"AI consumer app trend news {YESTERDAY}",
-            f"OpenAI Google DeepMind AI news {YESTERDAY}",
-            f"AI regulation Europe US news {YESTERDAY}",
+            "OpenAI Google new AI model announcement April 2026",
+            "artificial intelligence breakthrough news April 2026",
+            "EU AI Act regulation news April 2026",
+            "AI consumer product trend April 2026",
         ]
     },
 ]
@@ -92,55 +92,96 @@ def save_seen(seen: set):
 def news_id(title: str) -> str:
     return hashlib.md5(title.lower().strip()[:80].encode()).hexdigest()[:12]
 
-def search_news(category: dict, client: anthropic.Anthropic) -> list[dict]:
-    queries_str = "\n".join(f"- {q}" for q in category["queries"])
+def single_search(query: str, client: anthropic.Anthropic) -> list[dict]:
     prompt = f"""
-Ти — AI-аналітик новин для українського стартапу Psynex (AI-платформа самопізнання та стосунків).
+Виконай веб-пошук за запитом: "{query}"
 
-Зроби пошук за цими запитами:
-{queries_str}
+Сьогодні: {DATE_STR}
+Шукай новини за останні 7 днів (після {WEEK_AGO}).
 
-Знайди МІНІМУМ 2 реальні свіжі новини за {YESTERDAY} або {DAY_BEFORE}.
-Категорія: {category['label']}
-
-Для кожної новини напиши переказ українською мовою 150-200 слів.
+Якщо знайшов реальні новини — поверни JSON масив.
+Якщо нічого свіжого немає — поверни [].
 
 Відповідай ЛИШЕ JSON (без markdown):
 [
   {{
-    "title": "Заголовок українською",
-    "url": "https://оригінальне посилання",
+    "title": "Заголовок новини мовою оригіналу",
+    "url": "https://реальне посилання",
     "date": "ДД.ММ.РРРР",
-    "source": "назва ЗМІ",
-    "geo": "UA або EU або UK або USA",
-    "summary_ua": "Переказ новини українською мовою, 150-200 слів. Обов'язково: хто, що зробив, яка сума/масштаб, чому важливо для ринку AI або стартапів.",
+    "source": "назва видання",
+    "geo": "UA або EU або UK або USA або Global",
+    "summary_en": "Короткий переказ 2-3 речення англійською",
     "importance": 8
   }}
 ]
-
-ВАЖЛИВО:
-- Тільки реальні новини з реальними посиланнями
-- Дата: {YESTERDAY} або {DAY_BEFORE} (не старіше)
-- Мінімум 2 новини
-- summary_ua ОБОВ'ЯЗКОВО 150-200 слів українською
-- Якщо нічого — поверни []
+Максимум 2 результати. Тільки реальні новини з реальними URL.
 """
     try:
         response = client.messages.create(
             model="claude-opus-4-5",
-            max_tokens=4000,
+            max_tokens=1500,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": prompt}]
         )
         text = "".join(b.text for b in response.content if b.type == "text").strip()
         if text.startswith("```"):
             text = text.split("```")[1].lstrip("json").strip()
-        return json.loads(text) if text and text != "[]" else []
+        start = text.find("[")
+        end = text.rfind("]") + 1
+        if start >= 0 and end > start:
+            text = text[start:end]
+        return json.loads(text) if text else []
     except Exception as e:
-        print(f"  ⚠ {e}")
+        print(f"    ⚠ {e}")
         return []
 
+def translate_and_format(items: list[dict], client: anthropic.Anthropic) -> list[dict]:
+    if not items:
+        return []
+    items_str = json.dumps(items, ensure_ascii=False, indent=2)
+    prompt = f"""
+Ось список новин:
+{items_str}
+
+Для кожної новини:
+1. Перекладіть title українською
+2. Напишіть summary_ua — переказ 150-200 слів українською. Що сталось, хто головний герой, яка сума або масштаб, чому важливо для AI ринку або стартап-екосистеми.
+3. Збережіть всі інші поля без змін
+
+Відповідай ЛИШЕ JSON масивом (без markdown):
+[
+  {{
+    "title": "Заголовок українською",
+    "url": "...",
+    "date": "...",
+    "source": "...",
+    "geo": "...",
+    "summary_ua": "Переказ 150-200 слів українською...",
+    "importance": 8
+  }}
+]
+"""
+    try:
+        response = client.messages.create(
+            model="claude-opus-4-5",
+            max_tokens=3000,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        text = response.content[0].text.strip()
+        if text.startswith("```"):
+            text = text.split("```")[1].lstrip("json").strip()
+        start = text.find("[")
+        end = text.rfind("]") + 1
+        if start >= 0 and end > start:
+            text = text[start:end]
+        return json.loads(text) if text else items
+    except Exception as e:
+        print(f"    ⚠ translate error: {e}")
+        return items
+
 def send_telegram(text: str):
+    if len(text) > 4096:
+        text = text[:4090] + "..."
     requests.post(
         f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
         json={"chat_id": TELEGRAM_CHAT, "text": text, "parse_mode": "HTML"},
@@ -148,19 +189,20 @@ def send_telegram(text: str):
     ).raise_for_status()
 
 def format_news(n: dict, category: dict) -> str:
-    geo_flag = {"UA":"🇺🇦","EU":"🇪🇺","UK":"🇬🇧","USA":"🇺🇸"}.get(n.get("geo",""),"🌐")
+    geo_flag = {"UA":"🇺🇦","EU":"🇪🇺","UK":"🇬🇧","USA":"🇺🇸","Global":"🌍"}.get(n.get("geo",""),"🌐")
     importance = n.get("importance", 0)
     heat = "🔥" if importance >= 9 else "⭐⭐" if importance >= 7 else "⭐"
+    summary = n.get("summary_ua") or n.get("summary_en","")
     return (
         f"{category['emoji']} {geo_flag} {heat} <b>{n['title']}</b>\n\n"
-        f"{n.get('summary_ua','')}\n\n"
+        f"{summary}\n\n"
         f"📅 {n.get('date','?')} | 📰 {n.get('source','')}\n"
         f"🔗 {n.get('url','')}"
     )
 
 def main():
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
-    print(f"\n{'='*50}\nPsynex News Bot | {now}\n{'='*50}")
+    print(f"\n{'='*50}\nPsynex News Bot v3 | {now}\n{'='*50}")
 
     seen = load_seen()
     client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
@@ -178,23 +220,43 @@ def main():
 
     for category in CATEGORIES:
         print(f"\n📂 {category['label']}...")
-        news_list = search_news(category, client)
+        all_raw = []
+        seen_urls = set()
 
-        new_items = [
-            (news_id(n["title"]), n) for n in news_list
-            if news_id(n.get("title","")) not in seen
-        ]
-        new_items.sort(key=lambda x: x[1].get("importance",0), reverse=True)
+        for query in category["queries"]:
+            print(f"  🔍 {query[:50]}...")
+            results = single_search(query, client)
+            for r in results:
+                url = r.get("url","")
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    all_raw.append(r)
+            time.sleep(1)
 
-        if not new_items:
+        print(f"  Знайдено: {len(all_raw)}")
+
+        if not all_raw:
             send_telegram(
                 f"{category['emoji']} <b>{category['label']}</b>\n\n"
-                f"📭 Свіжих новин за вчора/позавчора не знайдено."
+                f"📭 Свіжих новин не знайдено."
             )
             continue
 
+        new_raw = [r for r in all_raw if news_id(r.get("title","")) not in seen]
+
+        if not new_raw:
+            send_telegram(
+                f"{category['emoji']} <b>{category['label']}</b>\n\n"
+                f"📭 Всі знайдені новини вже надсилались раніше."
+            )
+            continue
+
+        new_raw.sort(key=lambda x: x.get("importance",0), reverse=True)
+        translated = translate_and_format(new_raw[:3], client)
+
         sent_in_category = 0
-        for nid, n in new_items[:3]:
+        for n in translated:
+            nid = news_id(n.get("title",""))
             try:
                 send_telegram(format_news(n, category))
                 seen.add(nid)
@@ -203,7 +265,7 @@ def main():
             except Exception as e:
                 print(f"  ❌ {e}")
 
-        print(f"   Надіслано: {sent_in_category}")
+        print(f"  Надіслано: {sent_in_category}")
 
     send_telegram(
         f"✅ <b>Дайджест завершено — {now}</b>\n"
