@@ -1,7 +1,6 @@
 """
-Psynex News Bot v4
-Кожен пошук = окремий Claude API виклик.
-Природні журналістські запити без операторів.
+Psynex News Bot v5
+Дедублікація по URL. Один запуск на день через cron-job.org.
 """
 
 import os
@@ -103,8 +102,10 @@ def save_seen(seen: set):
     with open(SEEN_FILE, "w") as f:
         json.dump(sorted(seen), f, indent=2)
 
-def news_id(title: str) -> str:
-    return hashlib.md5(title.lower().strip()[:80].encode()).hexdigest()[:12]
+def news_id(title: str, url: str = "") -> str:
+    # Хешуємо по URL — надійніший за назву
+    key = url.strip().rstrip("/").lower() if url else title.lower().strip()[:80]
+    return hashlib.md5(key.encode()).hexdigest()[:12]
 
 def single_search(query: str, client: anthropic.Anthropic) -> list[dict]:
     prompt = f"""
@@ -160,7 +161,7 @@ def translate_and_summarize(items: list[dict], client: anthropic.Anthropic) -> l
 
 Для кожної новини зроби:
 1. title — переклади заголовок українською
-2. summary_ua — переказ українською рівно 150-200 слів. Структура: хто і що зробив → яка сума або масштаб → контекст ринку → чому важливо для AI або стартап-екосистеми
+2. summary_ua — переказ українською 150-200 слів. Структура: хто і що зробив → яка сума або масштаб → контекст ринку → чому важливо для AI або стартап-екосистеми
 3. Всі інші поля (url, date, source, geo, importance) — залиш без змін
 
 Відповідай ЛИШЕ JSON масивом (без markdown):
@@ -217,7 +218,7 @@ def format_news(n: dict, category: dict) -> str:
 
 def main():
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
-    print(f"\n{'='*50}\nPsynex News Bot v4 | {now}\n{'='*50}")
+    print(f"\n{'='*50}\nPsynex News Bot v5 | {now}\n{'='*50}")
 
     seen = load_seen()
     client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
@@ -242,7 +243,7 @@ def main():
             print(f"  🔍 {query[:55]}...")
             results = single_search(query, client)
             for r in results:
-                url = r.get("url", "")
+                url = r.get("url", "").strip().rstrip("/").lower()
                 title = r.get("title", "")
                 if url and url not in seen_urls and title:
                     seen_urls.add(url)
@@ -258,9 +259,10 @@ def main():
             )
             continue
 
+        # Фільтруємо по URL хешу
         new_raw = [
             r for r in all_raw
-            if news_id(r.get("title", "")) not in seen
+            if news_id(r.get("title",""), r.get("url","")) not in seen
         ]
 
         if not new_raw:
@@ -275,7 +277,7 @@ def main():
 
         sent_in_category = 0
         for n in translated:
-            nid = news_id(n.get("title", ""))
+            nid = news_id(n.get("title",""), n.get("url",""))
             try:
                 send_telegram(format_news(n, category))
                 seen.add(nid)
